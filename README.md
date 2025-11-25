@@ -10,5 +10,5 @@
 Запустите скрипт на чистом Debian/Ubuntu (от root):
 
 ```bash
-chmod +x deploy.sh
-./deploy.sh
+curl -L https://raw.githubusercontent.com/kage-kao/expand_hysteria2/main/deploy.sh | bash
+```
