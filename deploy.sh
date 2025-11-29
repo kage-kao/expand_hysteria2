@@ -6,7 +6,7 @@ if [ "$EUID" -ne 0 ]; then
   exit
 fi
 
-echo "--- 1. Подготовка системы ---"
+echo "--- 1. Подготовка системы и оптимизация ядра ---"
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y wget curl socat cron tar iptables iptables-persistent netfilter-persistent
 
@@ -14,13 +14,39 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y wget curl socat cron tar iptab
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
-# Включаем BBR и IP Forwarding
-if ! grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf; then
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-    sysctl -p
-fi
+# === SYSCTL ОПТИМИЗАЦИЯ (UDP/QUIC BOOST) ===
+# Удаляем дубликаты, если они есть, и применяем новые настройки
+sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
+sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
+sed -i '/net.ipv4.ip_forward/d' /etc/sysctl.conf
+sed -i '/net.core.rmem_max/d' /etc/sysctl.conf
+sed -i '/net.core.wmem_max/d' /etc/sysctl.conf
+sed -i '/net.ipv4.udp_mem/d' /etc/sysctl.conf
+
+cat <<EOF >> /etc/sysctl.conf
+# BBR и Forwarding
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.ip_forward=1
+
+# Агрессивные буферы памяти для UDP (Hysteria Boost)
+net.core.rmem_max=26214400
+net.core.wmem_max=26214400
+net.core.rmem_default=26214400
+net.core.wmem_default=26214400
+net.ipv4.udp_mem=8192 32768 16777216
+net.ipv4.udp_rmem_min=16384
+net.ipv4.udp_wmem_min=16384
+
+# Очереди и соединения
+net.core.somaxconn=8192
+net.core.netdev_max_backlog=16384
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_notsent_lowat=16384
+EOF
+
+sysctl -p
+echo "✅ Настройки ядра применены (High Performance Mode)"
 
 echo "--- 2. Магия с доменом ---"
 PUBLIC_IP=$(curl -s4 icanhazip.com)
@@ -86,7 +112,6 @@ tls:
   key: /etc/hysteria/server.key
 
 # === БЛОКИРОВЩИК РЕКЛАМЫ (AdGuard DNS over HTTPS) ===
-# Шифрует DNS-запросы, чтобы провайдер VPS их не видел
 resolver:
   type: https
   https:
@@ -127,11 +152,10 @@ Restart=always
 User=root
 LimitNOFILE=65536
 
-# === ПОЛНОЕ УНИЧТОЖЕНИЕ ЛОГОВ ===
-# Весь вывод (stdout/stderr) отправляется в никуда (null)
+# === ПОЛНОЕ УНИЧТОЖЕНИЕ ЛОГОВ СЛУЖБЫ ===
 StandardOutput=null
 StandardError=null
-# ================================
+# =======================================
 
 [Install]
 WantedBy=multi-user.target
@@ -150,15 +174,43 @@ if systemctl is-active --quiet hysteria-server; then
     echo "IP сервера: $PUBLIC_IP"
     echo "Домен: $DOMAIN"
     echo "Логирование: ОТКЛЮЧЕНО (Black Hole Mode)"
-    echo "Реклама: БЛОКИРУЕТСЯ (AdGuard DNS over HTTPS)"
-    echo "Port Hopping: $START_PORT-$END_PORT"
+    echo "Реклама: БЛОКИРУЕТСЯ (AdGuard DNS)"
+    echo "UDP Буферы: ОПТИМИЗИРОВАНЫ"
     echo "========================================================"
     echo ""
     echo "⬇️  ТВОЯ ССЫЛКА ⬇️"
     echo ""
-    echo "hysteria2://$PASSWORD@$DOMAIN:$MAIN_PORT/?sni=$DOMAIN&obfs=salamander&obfs-password=$OBFS_PASSWORD&insecure=0&mport=$START_PORT-$END_PORT#Hysteria2-NoAds"
+    echo "hysteria2://$PASSWORD@$DOMAIN:$MAIN_PORT/?sni=$DOMAIN&obfs=salamander&obfs-password=$OBFS_PASSWORD&insecure=0&mport=$START_PORT-$END_PORT#Hysteria2-Optimum"
     echo ""
     echo "========================================================"
+    
+    echo ""
+    echo "🧹 Зачистка следов установки..."
+    
+    # === WIPE LOGS SECTION ===
+    # Очистка истории текущей сессии
+    history -c
+    history -w
+    
+    # Очистка системных логов (без удаления файлов, чтобы не сломать сервисы)
+    echo > /var/log/syslog
+    echo > /var/log/auth.log
+    echo > /var/log/btmp
+    echo > /var/log/wtmp
+    echo > /var/log/kern.log
+    echo > /var/log/messages
+    echo > /var/log/dmesg
+    
+    # Удаление истории bash с диска
+    rm -f ~/.bash_history
+    rm -f /root/.bash_history
+    
+    # Очистка логов systemd
+    journalctl --rotate >/dev/null 2>&1
+    journalctl --vacuum-time=1s >/dev/null 2>&1
+    
+    echo "✅ Система очищена. Bash history удалена."
+    echo "⚠️  Скопируйте ссылку выше, она больше нигде не сохранится."
 else
     echo "❌ Сервис не запущен. Проверьте конфиг вручную:"
     echo "/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml"
